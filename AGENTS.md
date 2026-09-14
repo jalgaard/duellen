@@ -46,13 +46,13 @@ Målet är att programledaren före spelstart väljer mellan:
 
 Valt läge ska synkas till TV:n så att båda enheterna använder samma frågepaket.
 
-## Aktuellt repoläge vid import 2026-09-14
+## Aktuellt repoläge 2026-09-14
 
 GitHub-repot är `jalgaard/duellen` och publiceras via GitHub Pages på:
 
 https://jalgaard.github.io/duellen/
 
-Den lokalt hämtade `main`-grenen innehåller grundversionen med Familj-frågorna. Barn/Familj-versionen uppgavs vara färdig som en nedladdningsbar ZIP i originalchatten men hade inte kunnat pushas på grund av den tidigare ChatGPT-kopplingens 403/read-only-begränsning. Kontrollera därför alltid faktisk kod före påståenden om att Barn-läget är infört.
+Barn/Familj-versionen från originalchatten är införd. Programledaren kan välja läge före spelstart, valet synkas till TV:n och Barn-läget innehåller de 25 separata frågorna som beskrivs ovan. Fortsätt ändå att behandla faktisk kod som sanningen om nuvarande funktionalitet.
 
 ## Arbetsprinciper
 

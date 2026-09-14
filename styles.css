@@ -248,3 +248,26 @@ button.tile { width:100%; }
   .connection-badge { font-size:12px; }
   .question-card { min-height:320px; }
 }
+
+/* Spelvariant: Familj eller Barn */
+.game-mode-grid { margin-top: 8px; }
+.mode-card { min-height: 138px; position: relative; }
+.mode-card.selected {
+  outline: 4px solid #fff36b;
+  outline-offset: 3px;
+  filter: brightness(1.12);
+  box-shadow: inset 0 2px 0 rgba(255,255,255,.42), inset 0 -8px 18px rgba(0,0,0,.3), 0 0 0 7px rgba(255,213,26,.18), 0 10px 24px rgba(0,0,0,.28);
+}
+.mode-card.selected::after {
+  content: "VALD";
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: var(--gold-2);
+  color: #102041;
+  font-size: 11px;
+  font-weight: 1000;
+  letter-spacing: .08em;
+}
