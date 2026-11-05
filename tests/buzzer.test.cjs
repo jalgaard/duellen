@@ -1,0 +1,42 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const B=require('../buzzer.js');
+test('host atomically reserves colors and validates names and connections',()=>{
+  const players=[];
+  assert.equal(B.join(players,'a',' Alice ','red'),null);
+  assert.ok(B.join(players,'b','Bob','red'));
+  assert.ok(B.join(players,'a','Again','blue'));
+  assert.ok(B.join(players,'b',' ','blue'));
+  assert.ok(B.join(players,'b','Bob','unknown'));
+  assert.ok(B.join(players,'b','x'.repeat(21),'blue'));
+  assert.equal(players.length,1);
+  players.splice(0,1);
+  assert.equal(B.join(players,'b','Bob','red'),null);
+});
+test('host receipt order selects exactly one winner, ignoring supplied client times',()=>{
+  const players=[{id:'a',name:'Alice',color:'red'},{id:'b',name:'Bob',color:'blue'}];
+  const b=B.open(B.fresh());
+  assert.equal(B.buzz(b,players,'a',b.round,true),true);
+  assert.equal(B.buzz(b,players,'b',b.round,true),false);
+  assert.equal(b.winner.name,'Alice');
+});
+test('stale, unregistered and inactive buzzes cannot win; reopening excludes earlier winners',()=>{
+  const players=['a','b','c'].map(id=>({id,name:id,color:id}));
+  let b=B.open(B.fresh());
+  const old=b.round;
+  assert.equal(B.buzz(b,players,'unknown',old,true),false);
+  assert.equal(B.buzz(b,players,'a',old,false),false);
+  assert.equal(B.buzz(b,players,'a',old,true),true);
+  b=B.open(b,true);
+  assert.notEqual(b.round,old);
+  assert.equal(B.buzz(b,players,'b',old,true),false);
+  assert.equal(B.buzz(b,players,'a',b.round,true),false);
+  assert.equal(B.buzz(b,players,'b',b.round,true),true);
+  b=B.open(b,true);
+  assert.deepEqual(b.excluded,['a','b']);
+  assert.equal(B.buzz(b,players,'c',b.round,true),true);
+  b=B.open(b);
+  assert.deepEqual(b.excluded,[]);
+  assert.equal(B.buzz(b,players,'a',old,true),false);
+  assert.equal(B.buzz(b,players,'a',b.round,true),true);
+});

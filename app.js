@@ -1,5 +1,8 @@
 (() => {
   const app = document.getElementById('app');
+  const B = window.DuellenBuzzer;
+  let contestantId=null, joinName='', joinColor='', joinRoom='', joining=false, buzzPending=false;
+  const contestantConnections = new Map();
   const familyQuiz = window.DUELLEN_QUIZ;
   const childQuiz = {
     title: 'Duellen', label: 'Barn', categories: [
@@ -54,7 +57,7 @@
   let state = {
     roomCode:'', phase:'setup', gameMode:'family',
     players:[{id:id(),name:'Spelare 1',score:0},{id:id(),name:'Spelare 2',score:0}],
-    used:{}, active:null, showAnswer:false, winner:null
+    used:{}, active:null, showAnswer:false, winner:null, contestants:[], buzzer:B.fresh()
   };
 
   const quiz = () => quizzes[state.gameMode] || familyQuiz;
@@ -64,11 +67,15 @@
     hostConnections = hostConnections.filter(c => c && c.open);
     hostConnections.forEach(c => { try { c.send({type:'state',state:clone(state)}); } catch(_){} });
   };
-  const setState = (fn, send=true) => { fn(state); render(); if(send) broadcast(); };
+  const setState = (fn, send=true) => {
+    fn(state);
+    if(!state.active || state.phase!=='board') state.buzzer=B.fresh();
+    render(); if(send) broadcast();
+  };
   const destroyPeer = () => {
     try { tvConnection?.close(); } catch(_){}
     try { peer?.destroy(); } catch(_){}
-    peer=null; tvConnection=null; hostConnections=[];
+    peer=null; tvConnection=null; hostConnections=[]; contestantConnections.clear();
   };
 
   function startHostNetwork(room) {
@@ -79,9 +86,32 @@
     peer.on('open',()=>{ connectMessage='Spelrummet är öppet. TV:n kan ansluta nu.'; render(); });
     peer.on('connection',conn=>{
       hostConnections.push(conn);
-      conn.on('open',()=>{ connectMessage=`TV ansluten (${hostConnections.filter(c=>c.open).length})`; conn.send({type:'state',state:clone(state)}); render(); });
-      conn.on('data',d=>{ if(d?.type==='requestState') conn.send({type:'state',state:clone(state)}); });
-      conn.on('close',()=>{ connectMessage='TV frånkopplad. Den kan ansluta igen med samma kod.'; render(); });
+      conn.on('open',()=>{ connectMessage=`Anslutna enheter: ${hostConnections.filter(c=>c.open).length}`; conn.send({type:'state',state:clone(state)}); render(); });
+      conn.on('data',d=>{
+        if(d?.type==='requestState') conn.send({type:'state',state:clone(state)});
+        if(d?.type==='join') {
+          const connectionId=contestantConnections.get(conn) || B.token();
+          const error=B.join(state.contestants,connectionId,d.name,d.color);
+          // Identity comes from this connection, never from the buzz message.
+          if(!error) {
+            const contestant=state.contestants[state.contestants.length-1];
+            contestantConnections.set(conn,contestant.id);
+            conn.send({type:'joined',id:contestant.id});
+            render(); broadcast();
+          } else conn.send({type:'joinError',message:error});
+        }
+        if(d?.type==='buzz' && B.buzz(state.buzzer,state.contestants,contestantConnections.get(conn),d.round,state.phase==='board' && !!state.active && !state.showAnswer)) {
+          render(); broadcast();
+        }
+      });
+      conn.on('close',()=>{
+        const leaving=contestantConnections.get(conn);
+        contestantConnections.delete(conn);
+        state.contestants=state.contestants.filter(p=>p.id!==leaving);
+        hostConnections=hostConnections.filter(c=>c!==conn);
+        connectMessage='En enhet kopplades från. Den kan ansluta igen med samma kod.';
+        render(); broadcast();
+      });
     });
     peer.on('error',err=>{
       if(err?.type==='unavailable-id'){ state.roomCode=code(); startHostNetwork(state.roomCode); }
@@ -124,7 +154,8 @@
   }
 
   function renderHome(){
-    app.innerHTML=`<section class="screen"><div class="brand">Duellen</div><div class="subtitle">Familjens egen frågesport</div><div class="panel"><h2>Välj skärm</h2><div class="role-grid"><button class="role-card" id="host"><strong>📱 Programledare</strong><span>Starta spelet, se facit, välj frågor och dela ut poäng.</span></button><button class="role-card" id="tv"><strong>📺 TV / spelplan</strong><span>Anslut med fyrsiffrig kod och visa spelplan, frågor och poäng.</span></button></div></div></section>`;
+    app.innerHTML=`<section class="screen"><div class="brand">Duellen</div><div class="subtitle">Familjens egen frågesport</div><div class="panel"><h2>Välj skärm</h2><div class="role-grid"><button class="role-card" id="host"><strong>📱 Programledare</strong><span>Starta spelet, se facit, välj frågor och dela ut poäng.</span></button><button class="role-card" id="contestant"><strong>🔔 Tävlande</strong><span>Anslut med spelkod och använd mobilen som svarsknapp.</span></button><button class="role-card" id="tv"><strong>📺 TV / spelplan</strong><span>Anslut med fyrsiffrig kod och visa spelplan, frågor och poäng.</span></button></div></div></section>`;
+    document.getElementById('contestant').onclick=()=>{role='contestant';history.replaceState({},'','?role=contestant');render();};
     document.getElementById('host').onclick=()=>{ role='host'; state.roomCode=code(); state.phase='setup'; history.replaceState({},'','?role=host'); startHostNetwork(state.roomCode); };
     document.getElementById('tv').onclick=()=>{ role='tv'; history.replaceState({},'','?role=tv'); render(); };
   }
@@ -137,7 +168,7 @@
 
   function renderHostSetup(){
     const familySelected=state.gameMode==='family', childSelected=state.gameMode==='child';
-    app.innerHTML=`<section class="screen"><div class="brand small">Duellen</div><div class="panel"><h2>Skapa spel</h2><div class="room-code">${esc(state.roomCode)}</div><div class="status-line">${esc(connectMessage||'Öppnar spelrum…')}</div><div class="separator"></div><h3>Välj variant</h3><div class="role-grid"><button class="role-card" data-mode="family" style="${familySelected?'outline:4px solid #fff36b;':''}"><strong>${familySelected?'✓ ':''}👨‍👩‍👧‍👦 Familj</strong><span>Originalfrågorna – blandad nivå för hela familjen.</span></button><button class="role-card" data-mode="child" style="${childSelected?'outline:4px solid #fff36b;':''}"><strong>${childSelected?'✓ ':''}🧒 Barn</strong><span>Nya frågor på ungefär 12-årsnivå – lagom kluriga.</span></button></div><div class="separator"></div><h3>Spelare</h3><div class="setup-players">${state.players.map((p,i)=>`<div class="field"><label>Spelare ${i+1}</label><input data-name="${p.id}" value="${esc(p.name)}" maxlength="20"></div>`).join('')}</div><div class="actions"><button id="add" class="btn blue" ${state.players.length>=8?'disabled':''}>+ Lägg till spelare</button><button id="remove" class="btn ghost" ${state.players.length<=1?'disabled':''}>Ta bort sista</button></div><div class="separator"></div><p class="help">Öppna samma webbsida på TV:n, välj <strong>TV / spelplan</strong> och skriv in koden ovan.</p><div class="actions"><button id="start" class="btn gold">Starta Duellen</button></div></div></section>`;
+    app.innerHTML=`<section class="screen"><div class="brand small">Duellen</div><div class="panel"><h2>Skapa spel</h2><div class="room-code">${esc(state.roomCode)}</div><div class="status-line">${esc(connectMessage||'Öppnar spelrum…')}</div><div class="separator"></div><h3>Välj variant</h3><div class="role-grid"><button class="role-card" data-mode="family" style="${familySelected?'outline:4px solid #fff36b;':''}"><strong>${familySelected?'✓ ':''}👨‍👩‍👧‍👦 Familj</strong><span>Originalfrågorna – blandad nivå för hela familjen.</span></button><button class="role-card" data-mode="child" style="${childSelected?'outline:4px solid #fff36b;':''}"><strong>${childSelected?'✓ ':''}🧒 Barn</strong><span>Nya frågor på ungefär 12-årsnivå – lagom kluriga.</span></button></div><div class="separator"></div><h3>Anslutna svarsknappar</h3><div class="notice">${state.contestants.map(p=>`${esc(p.name)} (${B.colors.find(c=>c.id===p.color).name})`).join(', ') || 'Inga tävlande anslutna ännu.'}</div><h3>Spelare</h3><div class="setup-players">${state.players.map((p,i)=>`<div class="field"><label>Spelare ${i+1}</label><input data-name="${p.id}" value="${esc(p.name)}" maxlength="20"></div>`).join('')}</div><div class="actions"><button id="add" class="btn blue" ${state.players.length>=8?'disabled':''}>+ Lägg till spelare</button><button id="remove" class="btn ghost" ${state.players.length<=1?'disabled':''}>Ta bort sista</button></div><div class="separator"></div><p class="help">Öppna samma webbsida på TV:n, välj <strong>TV / spelplan</strong> och skriv in koden ovan.</p><div class="actions"><button id="start" class="btn gold">Starta Duellen</button></div></div></section>`;
     document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>setState(s=>{s.gameMode=b.dataset.mode;s.used={};s.active=null;s.showAnswer=false;}));
     document.querySelectorAll('[data-name]').forEach(inp=>inp.oninput=e=>{const p=state.players.find(x=>x.id===e.target.dataset.name);if(p)p.name=e.target.value;});
     document.getElementById('add').onclick=()=>setState(s=>{if(s.players.length<8)s.players.push({id:id(),name:`Spelare ${s.players.length+1}`,score:0});},false);
@@ -148,16 +179,17 @@
   function renderHostGame(){
     const a=activeData();
     app.innerHTML=`<section class="screen"><div class="host-shell"><div class="host-header"><div><div class="brand small" style="text-align:left">Duellen</div><div class="host-code">Kod ${esc(state.roomCode)}</div></div><div class="connection-badge">${modeLabel()} · ${esc(connectMessage||'Spelrum aktivt')}</div></div>${a?hostQuestion(a):boardHtml(true,true)}${scorebar()}<div class="actions"><button id="finish" class="btn ghost">Avsluta spel</button><button id="reset" class="btn danger">Nollställ</button></div></div></section>`;
-    document.querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>{const [ci,qi]=b.dataset.q.split('-').map(Number);setState(s=>{s.active={ci,qi};s.showAnswer=false;s.used[`${ci}-${qi}`]=true;});});
+    document.querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>{const [ci,qi]=b.dataset.q.split('-').map(Number);setState(s=>{s.active={ci,qi};s.showAnswer=false;s.buzzer=B.open(s.buzzer);s.used[`${ci}-${qi}`]=true;});});
     if(a) bindQuestion(a.q);
     document.getElementById('finish').onclick=()=>{const max=Math.max(...state.players.map(p=>p.score)), winners=state.players.filter(p=>p.score===max);setState(s=>{s.phase='winner';s.winner={names:winners.map(w=>w.name),score:max};s.active=null;s.showAnswer=false;});};
     document.getElementById('reset').onclick=()=>{if(confirm('Nollställa hela spelet och alla poäng?'))setState(s=>{s.phase='board';s.used={};s.active=null;s.showAnswer=false;s.winner=null;s.players.forEach(p=>p.score=0);});};
   }
   function hostQuestion(a){
-    return `<div class="host-question"><h3>${esc(a.cat.name)} · ${a.q.value}</h3><div class="q">${esc(a.q.question)}</div><div class="answer-box"><small>Rätt svar – endast programledaren</small><strong>${esc(a.q.answer)}</strong></div><div class="actions"><button id="answer" class="btn gold">${state.showAnswer?'Dölj svar på TV':'Visa rätt svar på TV'}</button><button id="board" class="btn blue">Till spelplanen</button></div><div class="player-controls">${state.players.map(p=>`<div class="player-control"><strong>${esc(p.name)}</strong><div class="mini-score">${money(p.score)}</div><div class="score-actions"><button class="btn success" data-score="${p.id}" data-delta="${a.q.value}">+${a.q.value}</button><button class="btn danger" data-score="${p.id}" data-delta="-${a.q.value}">−${a.q.value}</button></div></div>`).join('')}</div></div>`;
+    return `<div class="host-question">${buzzerStatus()}<h3>${esc(a.cat.name)} · ${a.q.value}</h3><div class="q">${esc(a.q.question)}</div><div class="answer-box"><small>Rätt svar – endast programledaren</small><strong>${esc(a.q.answer)}</strong></div><div class="actions"><button id="answer" class="btn gold">${state.showAnswer?'Dölj svar på TV':'Visa rätt svar på TV'}</button><button id="reopen" class="btn blue" ${state.showAnswer || !state.buzzer.winner?'disabled':''}>Öppna knapparna igen</button><button id="board" class="btn blue">Till spelplanen</button></div><div class="player-controls">${state.players.map(p=>`<div class="player-control"><strong>${esc(p.name)}</strong><div class="mini-score">${money(p.score)}</div><div class="score-actions"><button class="btn success" data-score="${p.id}" data-delta="${a.q.value}">+${a.q.value}</button><button class="btn danger" data-score="${p.id}" data-delta="-${a.q.value}">−${a.q.value}</button></div></div>`).join('')}</div></div>`;
   }
   function bindQuestion(){
-    document.getElementById('answer').onclick=()=>setState(s=>{s.showAnswer=!s.showAnswer;});
+    document.getElementById('answer').onclick=()=>setState(s=>{s.showAnswer=!s.showAnswer;if(s.showAnswer)s.buzzer.open=false;});
+    document.getElementById('reopen').onclick=()=>setState(s=>{if(s.buzzer.winner && !s.showAnswer)s.buzzer=B.open(s.buzzer,true);});
     document.getElementById('board').onclick=()=>setState(s=>{s.active=null;s.showAnswer=false;});
     document.querySelectorAll('[data-score]').forEach(b=>b.onclick=()=>setState(s=>{const p=s.players.find(x=>x.id===b.dataset.score);if(p)p.score+=Number(b.dataset.delta);}));
   }
@@ -166,7 +198,7 @@
     if(state.phase==='winner'&&state.winner)return renderWinner(true);
     const a=activeData();
     const content=a?`<div class="question-stage"><div class="question-kicker">${esc(a.cat.name)} · ${a.q.value} KR</div><div class="question-card">${state.showAnswer?`<div><div class="question-text" style="font-size:clamp(24px,3.4vw,48px);margin-bottom:28px">${esc(a.q.question)}</div><div class="answer-reveal">${esc(a.q.answer)}</div></div>`:`<div class="question-text">${esc(a.q.question)}</div>`}</div></div>`:boardHtml();
-    app.innerHTML=`<section class="screen"><div class="tv-topbar"><div class="brand tv-title">Duellen</div><div class="connection-badge">${modeLabel()} · ${esc(connectMessage||'Ansluten')}</div></div>${content}${scorebar()}</section>`;
+    app.innerHTML=`<section class="screen"><div class="tv-topbar"><div class="brand tv-title">Duellen</div><div class="connection-badge">${modeLabel()} · ${esc(connectMessage||'Ansluten')}</div></div>${buzzerStatus()}${content}${scorebar()}</section>`;
   }
 
   function renderWinner(tv=false){
@@ -175,8 +207,75 @@
     if(!tv){document.getElementById('back-board').onclick=()=>setState(s=>{s.phase='board';s.winner=null;});document.getElementById('new-round').onclick=()=>setState(s=>{s.phase='setup';s.used={};s.active=null;s.showAnswer=false;s.winner=null;s.players.forEach(p=>p.score=0);});}
   }
 
+
+  function buzzerStatus(){
+    if(!state.active) return '';
+    const winner=state.buzzer.winner;
+    return `<div class="buzzer-status" role="status">${winner ? `Först: ${esc(winner.name)}` : state.buzzer.open ? 'Svarsknapparna är öppna' : 'Svarsknapparna är låsta'}</div>`;
+  }
+
+  function connectContestant(){
+    destroyPeer(); contestantId=null; joining=true; buzzPending=false;
+    if(typeof window.Peer!=='function') {joining=false;connectMessage='Nätverksbiblioteket kunde inte laddas.';return render();}
+    connectMessage='Ansluter till programledaren…'; render();
+    const currentPeer=peer=new Peer();
+    let joinTimeout;
+    const fail=()=>{
+      if(peer!==currentPeer)return;
+      clearTimeout(joinTimeout);
+      const connection=tvConnection;
+      peer=null;tvConnection=null;
+      state.contestants=state.contestants.filter(p=>p.id!==contestantId);
+      contestantId=null;joining=false;buzzPending=false;
+      try {connection?.close();currentPeer.destroy();}catch(_){}
+      connectMessage='Kontakten med programledaren bröts. Kontrollera koden och anslut igen.';render();
+    };
+    currentPeer.on('open',()=>{
+      if(peer!==currentPeer)return;
+      const connection=tvConnection=currentPeer.connect(`duellen-${joinRoom}`,{reliable:true});
+      connection.on('open',()=>connection.send({type:'join',name:joinName,color:joinColor}));
+      connection.on('data',d=>{
+        if(peer!==currentPeer)return;
+        if(d?.type==='joined'){clearTimeout(joinTimeout);contestantId=d.id;joining=false;connectMessage='';}
+        if(d?.type==='joinError'){clearTimeout(joinTimeout);joining=false;connectMessage=d.message;}
+        if(d?.type==='state' && d.state){state=d.state;buzzPending=false;}
+        render();
+      });
+      connection.on('close',fail);connection.on('error',fail);
+    });
+    currentPeer.on('error',fail);currentPeer.on('disconnected',fail);
+    joinTimeout=setTimeout(fail,15000);
+  }
+
+  function renderContestant(){
+    const me=state.contestants.find(p=>p.id===contestantId);
+    if(me){
+      const b=state.buzzer, winner=b.winner;
+      const enabled=!!tvConnection?.open && state.phase==='board' && !!state.active && !state.showAnswer && b.open && !b.excluded.includes(me.id) && !buzzPending;
+      const message=winner ? (winner.id===me.id ? 'DU VAR FÖRST!' : `${winner.name} hann först`) : buzzPending ? 'Inväntar programledaren…' : b.excluded.includes(me.id) ? 'Du har redan svarat på frågan' : enabled ? 'TRYCK FÖR ATT SVARA!' : 'Vänta på nästa fråga';
+      const color=B.colors.find(c=>c.id===me.color);
+      app.innerHTML=`<button id="buzz" class="mobile-buzzer" style="--player-color:${color.hex}" ${enabled?'':'disabled'}><span>${esc(me.name)}</span><strong role="status">${esc(message)}</strong><span>Duellen · ${esc(state.roomCode)}</span></button>`;
+      const press=e=>{
+        if(e.type==='pointerdown' && (e.button!==0 || !e.isPrimary))return;
+        if(!enabled || buzzPending || !tvConnection?.open)return;
+        e.preventDefault();buzzPending=true;
+        tvConnection.send({type:'buzz',round:b.round});render();
+      };
+      document.getElementById('buzz').onpointerdown=press;
+      document.getElementById('buzz').onclick=press;
+      return;
+    }
+    app.innerHTML=`<section class="screen"><div class="brand">Duellen</div><div class="panel"><h2>Tävlande</h2><form id="contestant-form"><div class="field"><label for="contestant-room">Spelkod</label><input id="contestant-room" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="${esc(joinRoom)}" required></div><div class="field"><label for="contestant-name">Ditt namn</label><input id="contestant-name" maxlength="20" value="${esc(joinName)}" required></div><fieldset class="color-picker"><legend>Välj en ledig färg</legend>${B.colors.map(c=>`<label style="--player-color:${c.hex}"><input type="radio" name="color" value="${c.id}" ${joinColor===c.id?'checked':''} ${state.contestants.some(p=>p.color===c.id)?'disabled':''} required>${c.name}</label>`).join('')}</fieldset><div class="notice" role="status">${esc(connectMessage||'Programledaren bekräftar att färgen är ledig när du ansluter.')}</div><div class="actions"><button class="btn gold" ${joining?'disabled':''}>${joining?'Ansluter…':'Anslut'}</button><button type="button" id="contestant-back" class="btn ghost">Tillbaka</button></div></form></div></section>`;
+    document.getElementById('contestant-room').oninput=e=>{joinRoom=e.target.value;};
+    document.getElementById('contestant-name').oninput=e=>{joinName=e.target.value;};
+    document.querySelectorAll('[name="color"]').forEach(el=>el.onchange=()=>{joinColor=el.value;});
+    document.getElementById('contestant-form').onsubmit=e=>{e.preventDefault();joinName=joinName.trim();if(/^\d{4}$/.test(joinRoom) && joinName && joinColor)connectContestant();};
+    document.getElementById('contestant-back').onclick=()=>{destroyPeer();joining=false;role=null;connectMessage='';history.replaceState({},'',location.pathname);render();};
+  }
+
   function render(){
     if(!role)return renderHome();
+    if(role==='contestant') return renderContestant();
     if(role==='tv'){
       if(!state.roomCode||state.phase==='connecting'||(!tvConnection&&state.phase==='setup'))return renderTvConnect();
       return renderTvGame();
